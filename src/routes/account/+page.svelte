@@ -3,6 +3,8 @@
     import { invoke } from "@tauri-apps/api/core";
     import { onMount } from "svelte";
 
+    import { goto } from "$app/navigation";
+
     let accounts = $state<string[]>([]);
 
     onMount(async () => {
@@ -13,6 +15,10 @@
             accounts = [];
         }
     });
+
+    function goToAddAccount() {
+        window.location.href = "/account/add";
+    }
 </script>
 
 <main>
@@ -23,8 +29,8 @@
         </div>
 
         <div>
-            <button class="text-white text-xl p-3 font-roboto bg-neutral-800 rounded-xl">Manage Profiles</button>
-            <button class="text-natural-900 text-xl p-3 mx-10 font-roboto bg-green-400 rounded-xl shadow-green-400/50 shadow-2xl backdrop-blur-2xl">Add Account</button>
+            <button class="text-white text-xl p-3 font-roboto bg-neutral-800 rounded-xl transition-all hover:bg-neutral-950 active:bg-neutral-900">Manage Profiles</button>
+            <button onclick={goToAddAccount} class="text-natural-900 text-xl p-3 mx-10 font-roboto bg-green-400 rounded-xl shadow-green-400/50 shadow-2xl backdrop-blur-2xl transition-all hover:bg-green-200 active:bg-neutral-400">Add Account</button>
         </div>
     </div>
 

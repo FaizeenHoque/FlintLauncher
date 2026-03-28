@@ -8,6 +8,11 @@
     goto('/account')
   }
 
+  function goToHome() {
+    goto('/home')
+  }
+
+
 </script>
 
 <main class="flex h-screen">
