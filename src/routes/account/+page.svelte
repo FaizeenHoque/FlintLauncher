@@ -1,1 +1,14 @@
-<p class="text-white text-2xl">Hi</p>
+<script>
+    import { createAccount } from "../lib/account";
+
+    let username = $state("");
+
+    async function handleConfirm() {
+        try {
+            await createAccount(username);
+            console.log("done");
+        } catch (e) {
+            console.error("failed:", e);
+        }
+    }
+</script>
