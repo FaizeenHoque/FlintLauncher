@@ -1,6 +1,14 @@
 <script>
   import '../app.css';
+  import { goto } from '$app/navigation';
+
   let { children } = $props();
+
+  function goToAccount(){
+    goto('/account')
+  }
+
+
 </script>
 
 <main class="flex h-screen">
@@ -23,10 +31,10 @@
       <p class="font-rubik text-shadow-lg/30">Mods</p>
     </div>
 
-    <div class="text-gray-500 transition-colors ease-in-out hover:text-green-400 block hover:drop-shadow-green-300 drop-shadow-2xl">
+    <button type="button" onclick={goToAccount} class="text-gray-500 transition-colors ease-in-out hover:text-green-400 block hover:drop-shadow-green-300 drop-shadow-2xl">
       <i class="fi fi-rr-user-add text-xl text-shadow-lg/30"></i>
       <p class="font-rubik text-shadow-lg/30">Accounts</p>
-    </div>
+    </button>
 
     <div class="text-gray-500 mt-auto transition-colors ease-in-out hover:text-green-400 hover:drop-shadow-green-300 drop-shadow-2xl">
       <i class="fi fi-rr-settings-sliders text-xl text-shadow-lg/30"></i>
