@@ -1,5 +1,5 @@
 <script>
-    import { createAccount } from "../lib/account";
+    import { createAccount } from "$lib/account";
 
     let username = $state("");
 
