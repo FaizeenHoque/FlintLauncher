@@ -41,7 +41,7 @@
         <div>
            <h1 class="text-gray-400">Version Selected:</h1> 
            <select class="w-full bg-neutral-800 text-white font-rubik outline-none ring-0 focus:ring-0 focus:outline-none border-0">
-             <option>Hi</option>
+             <option>TEST_VERSION</option>
            </select>
         </div>
 
