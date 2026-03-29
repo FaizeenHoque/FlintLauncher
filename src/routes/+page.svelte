@@ -1,3 +1,20 @@
+<script>
+    import { invoke } from "@tauri-apps/api/core";
+
+    let version = $state("");
+
+    function launch() {
+        invoke("launchprocess", { version: version || "26.1" })
+            .then(() => {
+                console.log("Process launched successfully");
+            })
+            .catch((error) => {
+                console.error("Error launching process:", error); 
+            });
+    }
+</script>
+
+
 <main>
     <div class="flex flex-row gap-7 text-xl p-4 font-roboto font-medium">
 
@@ -31,6 +48,6 @@
     </div>
 
     <div>
-        <button class="text-white text-xl font-roboto font-medium py-5 px-15 m-3 bg-green-400 rounded-2xl transition-all ease-in duration-300 hover:bg-green-500 hover:shadow-green-900 shadow-lg active:bg-green-900">Launch</button>
+        <button class="text-white text-xl font-roboto font-medium py-5 px-15 m-3 bg-green-400 rounded-2xl transition-all ease-in duration-300 hover:bg-green-500 hover:shadow-green-900 shadow-lg active:bg-green-900 cursor-pointer" onclick={launch}>Launch</button>
     </div>
 </main>

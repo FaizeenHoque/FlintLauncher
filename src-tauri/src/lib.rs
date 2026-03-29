@@ -2,6 +2,9 @@ use tauri::Manager;
 use std::fs;
 use std::path::PathBuf;
 
+mod launchprocess;
+use launchprocess::launchprocess;
+
 fn accounts_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     {
@@ -64,7 +67,7 @@ fn accountget(app: tauri::AppHandle) -> Result<Vec<String>, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![accountcreate, accountget])
+        .invoke_handler(tauri::generate_handler![accountcreate, accountget, launchprocess])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
