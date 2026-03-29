@@ -25,6 +25,27 @@ pub fn launchprocess(_app: tauri::AppHandle, version: String) -> Result<(), Stri
     let appdata = std::env::var("APPDATA").map_err(|e| e.to_string())?;
     let mc_dir = PathBuf::from(&appdata).join(".flint");
     
+    // Read current account from accounts.json
+    let accounts_path = mc_dir.join("accounts.json");
+    let username = if accounts_path.exists() {
+        let raw = fs::read_to_string(&accounts_path).map_err(|e| e.to_string())?;
+        let data: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        
+        // Handle migration from old array format to new object format
+        let data = if data.is_array() {
+            serde_json::json!({"accounts": data, "current": null})
+        } else {
+            data
+        };
+        
+        data["current"]
+            .as_str()
+            .ok_or("No account selected")?
+            .to_string()
+    } else {
+        return Err("No accounts found".to_string());
+    };
+    
     // Read version JSON
     let version_json_path = mc_dir.join("versions").join(&version).join(format!("{}.json", &version));
     let json_content = fs::read_to_string(&version_json_path).map_err(|e| e.to_string())?;
@@ -93,7 +114,7 @@ pub fn launchprocess(_app: tauri::AppHandle, version: String) -> Result<(), Stri
         .arg("0")
         .arg("--enable-native-access=ALL-UNNAMED")
         .arg("--username")
-        .arg("Fynr1x")
+        .arg(username)
         .arg("--userType")
         .arg("legacy")
         .arg("--versionType")

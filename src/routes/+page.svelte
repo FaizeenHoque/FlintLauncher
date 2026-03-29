@@ -1,7 +1,18 @@
-<script>
+<script lang="ts">
     import { invoke } from "@tauri-apps/api/core";
+    import { onMount } from "svelte";
 
     let version = $state("");
+    let currentAccount = $state<string | null>(null);
+
+    onMount(async () => {
+        try {
+            currentAccount = await invoke<string | null>('accountgetcurrent');
+        } catch (error) {
+            console.error('Failed to load current account:', error);
+            currentAccount = null;
+        }
+    });
 
     function launch() {
         invoke("launchprocess", { version: version || "26.1" })
@@ -35,7 +46,7 @@
 
         <div>
            <h1 class="text-gray-400">Account Selected:</h1> 
-           <h2 class="text-white">None</h2>
+           <h2 class="text-white">{currentAccount || 'None'}</h2>
         </div>
 
         <div>
