@@ -2,20 +2,39 @@
     import { invoke } from "@tauri-apps/api/core";
     import { onMount } from "svelte";
 
-    let version = $state("");
-    let currentAccount = $state<string | null>(null);
+    interface Version {
+        id: string;
+        version_type: string;
+        release_time: string;
+        installed: boolean;
+    }
+
+    let selectedVersion: string = $state("");
+    let currentAccount: string | null = $state(null);
+    let installedVersions: Version[] = $state([]);
+    let loading: boolean = $state(true);
 
     onMount(async () => {
         try {
             currentAccount = await invoke<string | null>('accountgetcurrent');
+            installedVersions = await invoke<Version[]>('get_installed_versions_info');
+            if (installedVersions.length > 0) {
+                selectedVersion = installedVersions[0].id;
+            }
         } catch (error) {
-            console.error('Failed to load current account:', error);
-            currentAccount = null;
+            console.error('Failed to load data:', error);
+        } finally {
+            loading = false;
         }
     });
 
     function launch() {
-        invoke("launchprocess", { version: version || "26.1" })
+        if (!selectedVersion) {
+            console.error("No version selected");
+            return;
+        }
+        
+        invoke("launchprocess", { version: selectedVersion })
             .then(() => {
                 console.log("Process launched successfully");
             })
@@ -51,14 +70,28 @@
 
         <div>
            <h1 class="text-gray-400">Version Selected:</h1> 
-           <select class="w-full bg-neutral-800 text-white font-rubik outline-none ring-0 focus:ring-0 focus:outline-none border-0">
-             <option>TEST_VERSION</option>
+           {#if loading}
+           <h2 class="text-gray-500">Loading...</h2>
+           {:else if installedVersions.length === 0}
+           <h2 class="text-gray-500">No versions installed</h2>
+           {:else}
+           <select bind:value={selectedVersion} class="w-full bg-neutral-800 text-white font-rubik outline-none ring-0 focus:ring-0 focus:outline-none border-0">
+             {#each installedVersions as version}
+             <option value={version.id}>{version.id}</option>
+             {/each}
            </select>
+           {/if}
         </div>
 
     </div>
 
     <div>
-        <button class="text-white text-xl font-roboto font-medium py-5 px-15 m-3 bg-green-400 rounded-2xl transition-all ease-in duration-300 hover:bg-green-500 hover:shadow-green-900 shadow-lg active:bg-green-900 cursor-pointer" onclick={launch}>Launch</button>
+        <button 
+            onclick={launch}
+            disabled={!selectedVersion || loading}
+            class="text-white text-xl font-roboto font-medium py-5 px-15 m-3 bg-green-400 rounded-2xl transition-all ease-in duration-300 hover:bg-green-500 hover:shadow-green-900 shadow-lg active:bg-green-900 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed" 
+        >
+            Launch
+        </button>
     </div>
 </main>

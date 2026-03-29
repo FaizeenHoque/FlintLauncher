@@ -4,7 +4,12 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 
 mod launchprocess;
+mod library;
 use launchprocess::launchprocess;
+use library::{
+    fetch_available_versions, get_installed_versions, get_installed_versions_info, is_version_installed, delete_version,
+    install_version, get_java_path, install_java_component,
+};
 
 fn accounts_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
@@ -176,7 +181,22 @@ fn accountdelete(app: tauri::AppHandle, username: String) -> Result<(), String> 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![accountcreate, accountget, accountgetcurrent, accountsetcurrent, accountdelete, launchprocess])
+        .invoke_handler(tauri::generate_handler![
+            accountcreate,
+            accountget,
+            accountgetcurrent,
+            accountsetcurrent,
+            accountdelete,
+            launchprocess,
+            fetch_available_versions,
+            get_installed_versions,
+            get_installed_versions_info,
+            is_version_installed,
+            delete_version,
+            install_version,
+            get_java_path,
+            install_java_component,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
