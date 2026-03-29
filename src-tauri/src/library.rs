@@ -40,6 +40,27 @@ fn reset_cancel_flag() {
 const FLINT_DIR: &str = ".flint";
 const MANIFEST_URL: &str = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
 const JAVA_MANIFEST_URL: &str = "https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
+const FABRIC_META_URL: &str = "https://meta.fabricmc.net/v2/versions/loader";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ModloaderType {
+    Vanilla,
+    Fabric,
+    Forge,
+    Optifine,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameProfile {
+    pub name: String,
+    pub base_version: String,
+    pub modloader: ModloaderType,
+    pub modloader_version: Option<String>,
+    pub created_date: String,
+    pub last_played: Option<String>,
+    pub ram_mb: u32,
+    pub enabled_mods: Vec<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionInfo {
@@ -47,6 +68,12 @@ pub struct VersionInfo {
     pub version_type: String,
     pub release_time: String,
     pub installed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FabricLoaderVersion {
+    pub version: String,
+    pub stable: bool,
 }
 
 fn get_flint_dir() -> Result<PathBuf, String> {
@@ -734,6 +761,188 @@ pub async fn get_java_path(version: String) -> Result<String, String> {
         .as_str()
         .map(|s| s.to_string())
         .ok_or("No Java path found".to_string())
+}
+
+#[tauri::command]
+pub async fn get_all_profiles() -> Result<Vec<GameProfile>, String> {
+    let flint_dir = get_flint_dir()?;
+    let profiles_file = flint_dir.join("profiles.json");
+
+    if !profiles_file.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = fs::read_to_string(&profiles_file).map_err(|e| e.to_string())?;
+    let profiles: Vec<GameProfile> = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    Ok(profiles)
+}
+
+#[tauri::command]
+pub async fn create_profile(
+    name: String,
+    base_version: String,
+    modloader: String,
+) -> Result<GameProfile, String> {
+    let flint_dir = get_flint_dir()?;
+    
+    // Validate version exists
+    if !is_version_installed(base_version.clone()).await? {
+        return Err(format!("Version {} not installed", base_version));
+    }
+
+    let modloader_type = match modloader.as_str() {
+        "fabric" => ModloaderType::Fabric,
+        "forge" => ModloaderType::Forge,
+        "optifine" => ModloaderType::Optifine,
+        _ => ModloaderType::Vanilla,
+    };
+
+    let profile = GameProfile {
+        name: name.clone(),
+        base_version: base_version.clone(),
+        modloader: modloader_type.clone(),
+        modloader_version: None,
+        created_date: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        last_played: None,
+        ram_mb: 2048,
+        enabled_mods: vec![],
+    };
+
+    // Create profile directory
+    let profile_dir = flint_dir.join("instances").join(&name);
+    fs::create_dir_all(&profile_dir).map_err(|e| e.to_string())?;
+
+    // Create options.txt if it doesn't exist
+    let options_file = profile_dir.join("options.txt");
+    if !options_file.exists() {
+        let default_options = "key_key.attack:key.mouse.left\nkey_key.use:key.mouse.right\n";
+        fs::write(&options_file, default_options).map_err(|e| e.to_string())?;
+    }
+
+    // If using Fabric, download loader
+    if modloader_type == ModloaderType::Fabric {
+        install_fabric_loader(profile.clone()).await?;
+    }
+
+    // Save profiles list
+    let mut profiles = get_all_profiles().await?;
+    profiles.push(profile.clone());
+    let profiles_file = flint_dir.join("profiles.json");
+    fs::write(&profiles_file, serde_json::to_string_pretty(&profiles).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    Ok(profile)
+}
+
+#[tauri::command]
+pub async fn delete_profile(name: String) -> Result<(), String> {
+    let flint_dir = get_flint_dir()?;
+    
+    // Delete profile directory
+    let profile_dir = flint_dir.join("instances").join(&name);
+    if profile_dir.exists() {
+        fs::remove_dir_all(&profile_dir).map_err(|e| e.to_string())?;
+    }
+
+    // Remove from profiles list
+    let mut profiles = get_all_profiles().await?;
+    profiles.retain(|p| p.name != name);
+    let profiles_file = flint_dir.join("profiles.json");
+    fs::write(&profiles_file, serde_json::to_string_pretty(&profiles).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_profile_last_played(name: String) -> Result<(), String> {
+    let flint_dir = get_flint_dir()?;
+    let mut profiles = get_all_profiles().await?;
+
+    for profile in &mut profiles {
+        if profile.name == name {
+            profile.last_played = Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+            break;
+        }
+    }
+
+    let profiles_file = flint_dir.join("profiles.json");
+    fs::write(&profiles_file, serde_json::to_string_pretty(&profiles).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_profile_ram(name: String, ram_mb: u32) -> Result<(), String> {
+    if ram_mb < 512 || ram_mb > 16384 {
+        return Err("RAM must be between 512MB and 16GB".to_string());
+    }
+
+    let flint_dir = get_flint_dir()?;
+    let mut profiles = get_all_profiles().await?;
+
+    for profile in &mut profiles {
+        if profile.name == name {
+            profile.ram_mb = ram_mb;
+            break;
+        }
+    }
+
+    let profiles_file = flint_dir.join("profiles.json");
+    fs::write(&profiles_file, serde_json::to_string_pretty(&profiles).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_fabric_versions(minecraft_version: String) -> Result<Vec<FabricLoaderVersion>, String> {
+    let client = get_client();
+    let url = format!("{}/{}", FABRIC_META_URL, minecraft_version);
+    
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch Fabric versions: {}", e))?;
+
+    let versions: Vec<FabricLoaderVersion> = {
+        let text = response.text().await.map_err(|e| e.to_string())?;
+        serde_json::from_str(&text).map_err(|e| format!("Failed to parse Fabric versions: {}", e))?
+    };
+
+    Ok(versions)
+}
+
+async fn install_fabric_loader(mut profile: GameProfile) -> Result<(), String> {
+    let flint_dir = get_flint_dir()?;
+    
+    // Get latest stable Fabric loader for the version
+    let fabric_versions = get_fabric_versions(profile.base_version.clone()).await?;
+    let latest_stable = fabric_versions
+        .iter()
+        .find(|v| v.stable)
+        .or_else(|| fabric_versions.first())
+        .ok_or("No Fabric loader versions found")?;
+
+    profile.modloader_version = Some(latest_stable.version.clone());
+
+    // Create mods directory
+    let mods_dir = flint_dir.join("instances").join(&profile.name).join("mods");
+    fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
+
+    // Create fabric metadata file
+    let fabric_meta = json!({
+        "loader_version": latest_stable.version,
+        "mc_version": profile.base_version
+    });
+
+    let meta_path = flint_dir.join("instances").join(&profile.name).join("fabric_meta.json");
+    fs::write(&meta_path, serde_json::to_string_pretty(&fabric_meta).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 #[tauri::command]

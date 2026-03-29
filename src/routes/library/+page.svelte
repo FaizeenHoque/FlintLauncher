@@ -14,11 +14,33 @@
         installed: boolean;
     }
 
+    interface GameProfile {
+        name: string;
+        base_version: string;
+        modloader: string;
+        modloader_version: string | null;
+        created_date: string;
+        last_played: string | null;
+        ram_mb: number;
+        enabled_mods: string[];
+    }
+
     let versions: Version[] = $state([]);
+    let profiles: GameProfile[] = $state([]);
     let selectedVersion: string = $state('');
     let dropdownOpen = $state(false);
     let loading = $state(true);
     let searchQuery: string = $state('');
+    let showProfileModal = $state(false);
+    let profileName = $state('');
+    let profileSelectedVersion = $state('');
+    let profileDropdownOpen = $state(false);
+    let profileSearchQuery = $state('');
+    let creatingProfile = $state(false);
+    let currentTab = $state('versions');
+    let showProfileSettings = $state(false);
+    let settingsProfileName = $state('');
+    let settingsRamMb = $state(2048);
 
     // Subscribe to download store
     let installingVersion = $state<string | null>(null);
@@ -87,6 +109,7 @@
         // Load versions even if download is in progress
         // This ensures installed versions list is accurate when returning to the page
         await loadVersions();
+        await loadProfiles();
     }
 
     async function loadVersions() {
@@ -96,7 +119,7 @@
             if (!installingVersion) {
                 setDownloadLogs(['Loading versions from Mojang manifest...']);
             } else {
-                addDownloadLog('🔄 Refreshing version list...');
+                addDownloadLog('Refreshing version list...');
             }
             versions = await invoke('fetch_available_versions');
             addDownloadLog(`[OK] Loaded ${versions.length} versions`);
@@ -109,6 +132,93 @@
             addDownloadLog(`[ERROR] Error: ${err}`);
             loading = false;
         }
+    }
+
+    async function loadProfiles() {
+        try {
+            profiles = await invoke('get_all_profiles');
+        } catch (err) {
+            console.error('Failed to load profiles:', err);
+        }
+    }
+
+    async function createProfileHandler() {
+        if (!profileName.trim()) {
+            setError('Profile name is required');
+            return;
+        }
+        if (!profileSelectedVersion) {
+            setError('Minecraft version is required');
+            return;
+        }
+
+        creatingProfile = true;
+        try {
+            // Check if version is installed, if not download it first
+            const versionInstalled = await invoke('is_version_installed', { version: profileSelectedVersion });
+            
+            if (!versionInstalled) {
+                addDownloadLog(`[INFO] Downloading Minecraft ${profileSelectedVersion}...`);
+                await invoke('install_version', { version: profileSelectedVersion });
+                addDownloadLog(`[OK] Minecraft ${profileSelectedVersion} downloaded`);
+            }
+            
+            addDownloadLog(`[INFO] Creating profile '${profileName}'...`);
+            await invoke('create_profile', {
+                name: profileName,
+                baseVersion: profileSelectedVersion,
+                modloader: 'vanilla'
+            });
+            
+            addDownloadLog(`[OK] Profile '${profileName}' created successfully`);
+            await loadProfiles();
+            
+            // Reset modal
+            showProfileModal = false;
+            profileName = '';
+            profileSelectedVersion = '';
+            profileSearchQuery = '';
+            profileDropdownOpen = false;
+        } catch (err) {
+            setError(`Failed to create profile: ${err}`);
+            addDownloadLog(`[ERROR] Failed to create profile: ${err}`);
+        } finally {
+            creatingProfile = false;
+        }
+    }
+
+
+    async function deleteProfileHandler(name: string) {
+        if (!confirm(`Delete profile '${name}'?`)) return;
+
+        try {
+            await invoke('delete_profile', { name });
+            addDownloadLog(`[OK] Profile '${name}' deleted`);
+            await loadProfiles();
+        } catch (err) {
+            setError(`Failed to delete profile: ${err}`);
+            addDownloadLog(`[ERROR] Failed to delete: ${err}`);
+        }
+    }
+
+    async function saveRamSettings() {
+        if (!settingsProfileName) return;
+        
+        try {
+            await invoke('update_profile_ram', { name: settingsProfileName, ramMb: settingsRamMb });
+            addDownloadLog(`[OK] RAM for profile '${settingsProfileName}' updated to ${settingsRamMb}MB`);
+            showProfileSettings = false;
+            await loadProfiles();
+        } catch (err) {
+            setError(`Failed to update RAM: ${err}`);
+            addDownloadLog(`[ERROR] Failed to update RAM: ${err}`);
+        }
+    }
+
+    function openProfileSettings(profile: GameProfile) {
+        settingsProfileName = profile.name;
+        settingsRamMb = profile.ram_mb;
+        showProfileSettings = true;
     }
 
     // Compare and sort version strings properly
@@ -276,8 +386,24 @@
 </script>
 
 <main class="h-screen w-full flex flex-col gap-4 p-4 font-roboto bg-neutral-900">
+    <!-- Tab Navigation -->
+    <div class="flex gap-2 px-6 pt-2">
+        <button
+            onclick={() => currentTab = 'versions'}
+            class="px-4 py-2 rounded-t-lg font-semibold text-sm transition-all {currentTab === 'versions' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-gray-300 hover:bg-neutral-600'}">
+            Versions
+        </button>
+        <button
+            onclick={() => currentTab = 'profiles'}
+            class="px-4 py-2 rounded-t-lg font-semibold text-sm transition-all {currentTab === 'profiles' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-gray-300 hover:bg-neutral-600'}">
+            Profiles
+        </button>
+    </div>
+
     <div class="flex gap-4 flex-1 min-h-0">
         <div class="flex-1 flex flex-col gap-6 p-6 bg-neutral-800 rounded-xl overflow-y-auto">
+            
+            {#if currentTab === 'versions'}
             
             {#if error}
             <div class="bg-red-900/30 border border-red-500 text-red-300 px-4 py-3 rounded-lg text-sm">
@@ -410,13 +536,262 @@
                     {/if}
                 </div>
             </div>
+            
+            {:else if currentTab === 'profiles'}
+            
+            <!-- Profile Creation Modal -->
+            {#if showProfileModal}
+            <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div class="bg-neutral-800 rounded-xl p-8 w-full max-w-lg shadow-2xl">
+                    <div class="flex justify-between items-center mb-8">
+                        <h2 class="text-2xl font-bold text-green-400">Create New Profile</h2>
+                        <button onclick={() => showProfileModal = false} class="text-gray-400 hover:text-white text-3xl font-light">×</button>
+                    </div>
+                    
+                    <div class="flex flex-col gap-6">
+                        <!-- Profile Name -->
+                        <div>
+                            <label class="text-white text-sm font-semibold mb-3 block">Profile Name</label>
+                            <input
+                                type="text"
+                                bind:value={profileName}
+                                placeholder="e.g., My Experiment"
+                                class="bg-neutral-900 text-white text-sm py-3 px-4 rounded-lg w-full focus:outline-none focus:ring-2 focus:ring-green-400"/>
+                        </div>
+
+                        <!-- Version Selection (same as Versions tab) -->
+                        <div>
+                            <label class="text-white text-sm font-semibold mb-3 block">Select Minecraft Version</label>
+                            
+                            <!-- Search Box -->
+                            <input 
+                                type="text"
+                                bind:value={profileSearchQuery}
+                                placeholder="Search version..."
+                                class="bg-neutral-900 text-white text-sm py-2 px-3 rounded-lg mb-3 w-full focus:outline-none focus:ring-2 focus:ring-green-400" 
+                            />
+
+                            <!-- Version Dropdown Button -->
+                            <button
+                                onclick={() => profileDropdownOpen = !profileDropdownOpen}
+                                class="bg-neutral-900 text-white text-sm font-medium py-3 px-4 rounded-lg w-full flex items-center justify-between hover:bg-neutral-700 transition-all focus:ring-0 focus:outline-none">
+                                {profileSelectedVersion || 'Select Version'}
+                                <i class="fi fi-rr-angle-down text-xs transition-transform {profileDropdownOpen ? 'rotate-180' : ''}"></i>
+                            </button>
+
+                            <!-- Dropdown Menu -->
+                            {#if profileDropdownOpen}
+                            <div class="absolute mt-2 w-80 bg-neutral-900 rounded-lg shadow-lg z-50" style="max-height: 400px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #4ade80 #171717;">
+                                {#if organizedVersions.releases.filter(v => v.id.toLowerCase().includes(profileSearchQuery.toLowerCase())).length > 0}
+                                <div>
+                                    <div class="sticky top-0 bg-neutral-800 px-4 py-2 text-green-400 text-xs font-bold uppercase">Releases</div>
+                                    {#each organizedVersions.releases.filter(v => v.id.toLowerCase().includes(profileSearchQuery.toLowerCase())) as version (version.id)}
+                                    <button
+                                        onmousedown={() => {
+                                            profileSelectedVersion = version.id;
+                                            profileDropdownOpen = false;
+                                        }}
+                                        class="w-full text-left px-4 py-2 text-sm text-gray-400 hover:text-green-400 hover:bg-neutral-700 transition-colors {profileSelectedVersion === version.id ? 'text-green-400 bg-neutral-700' : ''}">
+                                        {version.id} {version.installed ? '[Downloaded]' : ''}
+                                    </button>
+                                    {/each}
+                                </div>
+                                {/if}
+
+                                {#if organizedVersions.snapshots.filter(v => v.id.toLowerCase().includes(profileSearchQuery.toLowerCase())).length > 0}
+                                <div>
+                                    <div class="sticky top-0 bg-neutral-800 px-4 py-2 text-yellow-400 text-xs font-bold uppercase">Snapshots</div>
+                                    {#each organizedVersions.snapshots.filter(v => v.id.toLowerCase().includes(profileSearchQuery.toLowerCase())) as version (version.id)}
+                                    <button
+                                        onmousedown={() => {
+                                            profileSelectedVersion = version.id;
+                                            profileDropdownOpen = false;
+                                        }}
+                                        class="w-full text-left px-4 py-2 text-sm text-gray-400 hover:text-yellow-400 hover:bg-neutral-700 transition-colors {profileSelectedVersion === version.id ? 'text-yellow-400 bg-neutral-700' : ''}">
+                                        {version.id} {version.installed ? '[Downloaded]' : ''}
+                                    </button>
+                                    {/each}
+                                </div>
+                                {/if}
+
+                                {#if organizedVersions.old.filter(v => v.id.toLowerCase().includes(profileSearchQuery.toLowerCase())).length > 0}
+                                <div>
+                                    <div class="sticky top-0 bg-neutral-800 px-4 py-2 text-gray-400 text-xs font-bold uppercase">Old Versions</div>
+                                    {#each organizedVersions.old.filter(v => v.id.toLowerCase().includes(profileSearchQuery.toLowerCase())) as version (version.id)}
+                                    <button
+                                        onmousedown={() => {
+                                            profileSelectedVersion = version.id;
+                                            profileDropdownOpen = false;
+                                        }}
+                                        class="w-full text-left px-4 py-2 text-sm text-gray-500 hover:text-gray-300 hover:bg-neutral-700 transition-colors {profileSelectedVersion === version.id ? 'text-gray-300 bg-neutral-700' : ''}">
+                                        {version.id} {version.installed ? '[Downloaded]' : ''}
+                                    </button>
+                                    {/each}
+                                </div>
+                                {/if}
+
+                                {#if organizedVersions.releases.length === 0 && organizedVersions.snapshots.length === 0 && organizedVersions.old.length === 0}
+                                <div class="px-4 py-4 text-gray-400 text-sm text-center">
+                                    No versions found
+                                </div>
+                                {/if}
+                            </div>
+                            {/if}
+
+                            {#if profileSelectedVersion}
+                            {@const selected = versions.find(v => v.id === profileSelectedVersion)}
+                            {#if selected?.installed}
+                            <p class="text-green-400 text-xs mt-2">✓ [Downloaded] - Already installed</p>
+                            {:else}
+                            <p class="text-blue-400 text-xs mt-2">⬇️ Will be downloaded automatically when profile is created</p>
+                            {/if}
+                            {/if}
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="flex gap-3 pt-8 mt-8 border-t border-neutral-700">
+                        <button
+                            onclick={() => {
+                                showProfileModal = false;
+                                profileName = '';
+                                profileSelectedVersion = '';
+                                profileSearchQuery = '';
+                                profileDropdownOpen = false;
+                            }}
+                            class="flex-1 bg-neutral-700 hover:bg-neutral-600 text-white font-semibold py-3 rounded-lg transition-colors">
+                            Cancel
+                        </button>
+                        <button
+                            onclick={createProfileHandler}
+                            disabled={!profileName.trim() || !profileSelectedVersion || creatingProfile}
+                            class="flex-1 bg-green-400 hover:bg-green-500 disabled:bg-gray-600 text-neutral-900 font-bold py-3 rounded-lg transition-colors disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                            {#if creatingProfile}
+                            <div class="animate-spin">⟳</div>
+                            <span>Creating...</span>
+                            {:else}
+                            <i class="fi fi-rr-check"></i>
+                            <span>Create Profile</span>
+                            {/if}
+                        </button>
+                    </div>
+                </div>
+            </div>
+            {/if}
+            
+            <!-- Profile Settings Modal -->
+            {#if showProfileSettings}
+            <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div class="bg-neutral-800 rounded-xl p-8 w-full max-w-lg shadow-2xl">
+                    <div class="flex justify-between items-center mb-8">
+                        <h2 class="text-2xl font-bold text-blue-400">Profile Settings</h2>
+                        <button onclick={() => showProfileSettings = false} class="text-gray-400 hover:text-white text-3xl font-light">×</button>
+                    </div>
+                    
+                    <div class="flex flex-col gap-6">
+                        <!-- Profile Name Display -->
+                        <div>
+                            <label class="text-white text-sm font-semibold mb-3 block">Profile: {settingsProfileName}</label>
+                        </div>
+
+                        <!-- RAM Setting -->
+                        <div>
+                            <div class="flex justify-between items-center mb-3">
+                                <label class="text-white text-sm font-semibold">Memory (RAM)</label>
+                                <span class="text-green-400 font-bold text-lg">{settingsRamMb}MB</span>
+                            </div>
+                            <div class="flex items-center gap-4">
+                                <span class="text-gray-400 text-xs">512MB</span>
+                                <input 
+                                    type="range" 
+                                    bind:value={settingsRamMb}
+                                    min={512}
+                                    max={16384}
+                                    step={256}
+                                    class="flex-1 h-2 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-green-400"
+                                />
+                                <span class="text-gray-400 text-xs">16GB</span>
+                            </div>
+                            <p class="text-gray-500 text-xs mt-2">Recommended: 4096-8192MB for modded instances</p>
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="flex gap-3 pt-8 mt-8 border-t border-neutral-700">
+                        <button
+                            onclick={() => showProfileSettings = false}
+                            class="flex-1 bg-neutral-700 hover:bg-neutral-600 text-white font-semibold py-3 rounded-lg transition-colors">
+                            Cancel
+                        </button>
+                        <button
+                            onclick={saveRamSettings}
+                            class="flex-1 bg-blue-400 hover:bg-blue-500 text-neutral-900 font-bold py-3 rounded-lg transition-colors flex items-center justify-center gap-2">
+                            Save Settings
+                        </button>
+                    </div>
+                </div>
+            </div>
+            {/if}
+            
+            <!-- Profiles List -->
+            <div class="flex flex-col gap-4">
+                <button
+                    onclick={() => showProfileModal = true}
+                    class="bg-green-400 text-neutral-900 font-bold text-sm py-2 rounded-lg flex items-center justify-center gap-2 shadow-lg shadow-green-400/30 hover:bg-green-500 transition-all">
+                    <i class="fi fi-rr-plus"></i> Create Profile
+                </button>
+                
+                {#if profiles.length === 0}
+                <div class="text-center py-8 text-gray-400">
+                    <div class="text-lg mb-2">No profiles yet</div>
+                    <div class="text-sm">Create a profile to get started</div>
+                </div>
+                {:else}
+                <div class="flex flex-col gap-3">
+                    {#each profiles as profile (profile.name)}
+                    <div class="bg-neutral-900 rounded-lg p-4 border border-neutral-700 hover:border-green-400/50 transition-colors">
+                        <div class="flex justify-between items-start mb-2">
+                            <div>
+                                <div class="text-white font-semibold text-lg">{profile.name}</div>
+                                <div class="text-gray-400 text-sm">Version: {profile.base_version}</div>
+                            </div>
+                            <div class="flex gap-2">
+                                <button
+                                    onclick={() => openProfileSettings(profile)}
+                                    class="bg-blue-900/30 text-blue-400 hover:bg-blue-900/50 px-3 py-1 rounded text-sm transition-colors">
+                                    Settings
+                                </button>
+                                <button
+                                    onclick={() => deleteProfileHandler(profile.name)}
+                                    class="bg-red-900/30 text-red-400 hover:bg-red-900/50 px-3 py-1 rounded text-sm transition-colors">
+                                    Delete
+                                </button>
+                            </div>
+                        </div>
+                        <div class="text-gray-500 text-xs flex gap-4">
+                            {#if profile.ram_mb}
+                            <span>RAM: {profile.ram_mb}MB</span>
+                            {/if}
+                            {#if profile.last_played}
+                            <span>Last played: {formatDate(profile.last_played)}</span>
+                            {:else}
+                            <span>Never played</span>
+                            {/if}
+                        </div>
+                    </div>
+                    {/each}
+                </div>
+                {/if}
+            </div>
+            
+            {/if}
         </div>
 
         <div class="w-80 flex flex-col p-6 bg-neutral-800 rounded-xl h-full">
-            <div class="text-green-400 text-xs uppercase tracking-widest font-bold mb-3 flex-shrink-0">Activity Log</div>
+            <div class="text-green-400 text-xs uppercase tracking-widest font-bold mb-3 shrink-0">Activity Log</div>
             <div class="flex-1 bg-neutral-900 rounded-lg p-4 overflow-y-auto text-xs font-mono text-gray-300 space-y-1 min-h-0">
                 {#each downloadLogs as log}
-                <div class="whitespace-pre-wrap break-words">{log}</div>
+                <div class="whitespace-pre-wrap break-all">{log}</div>
                 {/each}
                 {#if downloadLogs.length === 0}
                 <div class="text-gray-500">Waiting for activity...</div>

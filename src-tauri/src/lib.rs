@@ -8,7 +8,8 @@ mod library;
 use launchprocess::launchprocess;
 use library::{
     fetch_available_versions, get_installed_versions, get_installed_versions_info, is_version_installed, delete_version,
-    install_version, get_java_path, install_java_component,
+    install_version, get_java_path, install_java_component, get_all_profiles, create_profile, delete_profile, 
+    update_profile_last_played, update_profile_ram, get_fabric_versions, GameProfile, ModloaderType, FabricLoaderVersion,
 };
 
 fn accounts_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -196,6 +197,12 @@ pub fn run() {
             install_version,
             get_java_path,
             install_java_component,
+            get_all_profiles,
+            create_profile,
+            delete_profile,
+            update_profile_last_played,
+            update_profile_ram,
+            get_fabric_versions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
