@@ -6,10 +6,10 @@ A lightweight, modern and fast Minecraft launcher built with Tauri and Svelte.
 
 - 🎮 **Launch Minecraft** - Play multiple versions with ease
 - 📚 **Version Management** - Download, install, and manage game versions
-- 👤 **Account Management** - Create and switch between accounts
+- 👤 **Account Management** - Create and switch between accounts (Currently offline accounts)
 - ☕ **Automatic Java Setup** - Automatic Java runtime installation (8, 16, 17, 21)
 - 🎨 **Modern UI** - Clean, responsive interface built with Svelte and Tailwind
-- 🚀 **Fast & Lightweight** - Native performance with Tauri
+- 🚀 **Fast & Lightweight** - Native performance with Tauri and Rust's high performance
 
 ## Prerequisites
 
