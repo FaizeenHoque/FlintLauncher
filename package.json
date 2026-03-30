@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "bundle-java": "node src-tauri/bundle-java.js",
+    "build:release": "npm run bundle-java && npm run tauri build"
   },
   "license": "MIT",
   "dependencies": {
