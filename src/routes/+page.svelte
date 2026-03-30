@@ -56,19 +56,27 @@
         }
     });
 
+    function switchToProfiles() {
+        activeTab = 'profiles';
+    }
+
+    function switchToVanilla() {
+        activeTab = 'vanilla';
+    }
+
     function launch() {
-        if (activeTab === "profiles" && !selectedProfile) {
+        if (activeTab == "profiles" && !selectedProfile) {
             console.error("No profile selected");
             return;
         }
-        if (activeTab === "vanilla" && !selectedVersion) {
+        if (activeTab == "vanilla" && !selectedVersion) {
             console.error("No version selected");
             return;
         }
         
         isLaunching = true;
         
-        const launchPromise = activeTab === "profiles"
+        const launchPromise = activeTab == "profiles"
             ? invoke("launchprocess", { profileName: selectedProfile })
             : invoke("launchprocess", { version: selectedVersion });
 
@@ -110,21 +118,21 @@
         <!-- Tab Selection -->
         <div class="flex gap-2">
             <button 
-                onclick={() => activeTab = 'profiles'}
-                class="px-6 py-2 rounded-lg font-medium transition-all {activeTab === 'profiles' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-white hover:bg-neutral-600'}"
+                onclick={switchToProfiles}
+                class="px-6 py-2 rounded-lg font-medium transition-all {activeTab == 'profiles' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-white hover:bg-neutral-600'}"
             >
                 Modded Profiles
             </button>
             <button 
-                onclick={() => activeTab = 'vanilla'}
-                class="px-6 py-2 rounded-lg font-medium transition-all {activeTab === 'vanilla' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-white hover:bg-neutral-600'}"
+                onclick={switchToVanilla}
+                class="px-6 py-2 rounded-lg font-medium transition-all {activeTab == 'vanilla' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-white hover:bg-neutral-600'}"
             >
                 Vanilla Versions
             </button>
         </div>
 
         <!-- Profiles Tab -->
-        {#if activeTab === 'profiles'}
+        {#if activeTab == 'profiles'}
         <div class="flex flex-col gap-3">
             <div class="flex flex-col gap-1">
                 <label class="text-green-400 text-sm font-bold">Select Profile</label>
@@ -149,9 +157,9 @@
             <div class="bg-neutral-800 rounded-lg p-4 text-sm">
                 <div class="grid grid-cols-2 gap-2 text-gray-300">
                     <div>Base: {profile.base_version}</div>
-                    <div>Loader: {profile.modloader}</div>
+                    <!-- <div>Loader: {profile.modloader}</div> -->
                     <div>RAM: {profile.ram_mb}MB</div>
-                    <div>Mods: {profile.enabled_mods.length}</div>
+                    <!-- <div>Mods: {profile.enabled_mods.length}</div> -->
                 </div>
             </div>
             {/if}
@@ -160,7 +168,7 @@
         {/if}
 
         <!-- Vanilla Tab -->
-        {#if activeTab === 'vanilla'}
+        {#if activeTab == 'vanilla'}
         <div class="flex flex-col gap-3">
             <div class="flex flex-col gap-1">
                 <label class="text-green-400 text-sm font-bold">Select Version</label>
@@ -184,8 +192,8 @@
             <button 
                 onclick={launch}
                 disabled={
-                    (activeTab === 'profiles' && !selectedProfile) || 
-                    (activeTab === 'vanilla' && !selectedVersion) || 
+                    (activeTab == 'profiles' && !selectedProfile) || 
+                    (activeTab == 'vanilla' && !selectedVersion) || 
                     loading || isLaunching
                 }
                 class="flex-1 text-white text-lg font-roboto font-bold py-4 px-6 bg-green-400 rounded-xl transition-all hover:bg-green-500 active:bg-green-600 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed" 

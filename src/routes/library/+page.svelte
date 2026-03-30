@@ -17,12 +17,9 @@
     interface GameProfile {
         name: string;
         base_version: string;
-        modloader: string;
-        modloader_version: string | null;
         created_date: string;
         last_played: string | null;
         ram_mb: number;
-        enabled_mods: string[];
     }
 
     let versions: Version[] = $state([]);
@@ -37,7 +34,7 @@
     let profileDropdownOpen = $state(false);
     let profileSearchQuery = $state('');
     let creatingProfile = $state(false);
-    let currentTab = $state('versions');
+    let currentTab: string = $state('versions');
     let showProfileSettings = $state(false);
     let settingsProfileName = $state('');
     let settingsRamMb = $state(2048);
@@ -166,8 +163,7 @@
             addDownloadLog(`[INFO] Creating profile '${profileName}'...`);
             await invoke('create_profile', {
                 name: profileName,
-                baseVersion: profileSelectedVersion,
-                modloader: 'vanilla'
+                baseVersion: profileSelectedVersion
             });
             
             addDownloadLog(`[OK] Profile '${profileName}' created successfully`);
@@ -288,9 +284,14 @@
     }
 
     // Organize versions by type
-    function organizeVersions(versionsList: Version[], search: string) {
+    function organizeVersions(versionsList: Version[] | undefined, search: string | undefined) {
+        if (!versionsList || !Array.isArray(versionsList)) {
+            return { snapshots: [], releases: [], old: [] };
+        }
+        
+        const searchTerm = (search || '').toLowerCase();
         const filtered = versionsList.filter(v => 
-            v.id.toLowerCase().includes(search.toLowerCase())
+            v.id.toLowerCase().includes(searchTerm)
         );
 
         const snapshots = filtered.filter(v => v.version_type === 'snapshot').sort((a, b) => compareVersions(a.id, b.id));
@@ -382,6 +383,29 @@
         dropdownOpen = false;
     }
 
+    function switchToVersions() {
+        console.log('Switching to versions tab', currentTab, '→ versions');
+        currentTab = 'versions';
+        console.log('After assignment:', currentTab);
+    }
+
+    function switchToProfiles() {
+        console.log('Switching to profiles tab', currentTab, '→ profiles');
+        currentTab = 'profiles';
+        console.log('After assignment:', currentTab);
+    }
+
+    async function launchProfileHandler(profileName: string) {
+        try {
+            addDownloadLog(`[INFO] Launching profile '${profileName}'...`);
+            await invoke('launchprocess', { profileName });
+            addDownloadLog(`[OK] Game launched!`);
+        } catch (err) {
+            setError(`Failed to launch profile: ${err}`);
+            addDownloadLog(`[ERROR] Failed to launch: ${err}`);
+        }
+    }
+
     onMount();
 </script>
 
@@ -389,13 +413,13 @@
     <!-- Tab Navigation -->
     <div class="flex gap-2 px-6 pt-2">
         <button
-            onclick={() => currentTab = 'versions'}
-            class="px-4 py-2 rounded-t-lg font-semibold text-sm transition-all {currentTab === 'versions' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-gray-300 hover:bg-neutral-600'}">
+            onclick={switchToVersions}
+            class="px-4 py-2 rounded-t-lg font-semibold text-sm transition-all {currentTab == 'versions' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-gray-300 hover:bg-neutral-600'}">
             Versions
         </button>
         <button
-            onclick={() => currentTab = 'profiles'}
-            class="px-4 py-2 rounded-t-lg font-semibold text-sm transition-all {currentTab === 'profiles' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-gray-300 hover:bg-neutral-600'}">
+            onclick={switchToProfiles}
+            class="px-4 py-2 rounded-t-lg font-semibold text-sm transition-all {currentTab == 'profiles' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-gray-300 hover:bg-neutral-600'}">
             Profiles
         </button>
     </div>
@@ -403,7 +427,7 @@
     <div class="flex gap-4 flex-1 min-h-0">
         <div class="flex-1 flex flex-col gap-6 p-6 bg-neutral-800 rounded-xl overflow-y-auto">
             
-            {#if currentTab === 'versions'}
+            {#if currentTab == 'versions'}
             
             {#if error}
             <div class="bg-red-900/30 border border-red-500 text-red-300 px-4 py-3 rounded-lg text-sm">
@@ -537,7 +561,7 @@
                 </div>
             </div>
             
-            {:else if currentTab === 'profiles'}
+            {:else if currentTab == 'profiles'}
             
             <!-- Profile Creation Modal -->
             {#if showProfileModal}
@@ -756,6 +780,11 @@
                                 <div class="text-gray-400 text-sm">Version: {profile.base_version}</div>
                             </div>
                             <div class="flex gap-2">
+                                <button
+                                    onclick={() => launchProfileHandler(profile.name)}
+                                    class="bg-green-500/20 text-green-400 hover:bg-green-500/40 active:bg-green-500/60 px-3 py-1 rounded text-sm transition-colors font-semibold">
+                                    Launch
+                                </button>
                                 <button
                                     onclick={() => openProfileSettings(profile)}
                                     class="bg-blue-900/30 text-blue-400 hover:bg-blue-900/50 px-3 py-1 rounded text-sm transition-colors">

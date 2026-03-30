@@ -7,10 +7,48 @@ use tokio::fs as tokio_fs;
 use std::io::Write;
 use sha1::{Sha1, Digest};
 use tauri::Manager;
+use tauri::Emitter;
+use tokio::sync::Semaphore;
+use std::sync::Arc;
+use once_cell::sync::Lazy;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+// Shared HTTP client for connection pooling
+static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
+    Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| Client::new())
+});
+
+// Global flag for cancelling downloads
+static DOWNLOAD_CANCEL_FLAG: Lazy<Arc<AtomicBool>> = Lazy::new(|| Arc::new(AtomicBool::new(false)));
+
+fn get_client() -> &'static Client {
+    &HTTP_CLIENT
+}
+
+fn should_cancel_download() -> bool {
+    DOWNLOAD_CANCEL_FLAG.load(Ordering::Relaxed)
+}
+
+fn reset_cancel_flag() {
+    DOWNLOAD_CANCEL_FLAG.store(false, Ordering::Relaxed);
+}
 
 const FLINT_DIR: &str = ".flint";
 const MANIFEST_URL: &str = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
 const JAVA_MANIFEST_URL: &str = "https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameProfile {
+    pub name: String,
+    pub base_version: String,
+    pub created_date: String,
+    pub last_played: Option<String>,
+    pub ram_mb: u32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionInfo {
@@ -19,6 +57,8 @@ pub struct VersionInfo {
     pub release_time: String,
     pub installed: bool,
 }
+
+
 
 fn get_flint_dir() -> Result<PathBuf, String> {
     if let Some(appdata) = std::env::var_os("APPDATA") {
@@ -70,7 +110,7 @@ fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> std::io::Result<()> {
 
 #[tauri::command]
 pub async fn fetch_available_versions() -> Result<Vec<VersionInfo>, String> {
-    let client = Client::new();
+    let client = get_client();
     let response = client
         .get(MANIFEST_URL)
         .send()
@@ -125,6 +165,41 @@ pub async fn get_installed_versions() -> Result<Vec<String>, String> {
     }
 
     Ok(installed)
+}
+
+#[tauri::command]
+pub async fn get_installed_versions_info() -> Result<Vec<VersionInfo>, String> {
+    let installed_ids = get_installed_versions().await?;
+    
+    // Fetch all versions from manifest to get type and release_time
+    let client = get_client();
+    let response = client
+        .get(MANIFEST_URL)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch manifest: {}", e))?;
+
+    let manifest: Value = {
+        let text = response.text().await.map_err(|e| e.to_string())?;
+        serde_json::from_str(&text).map_err(|e| format!("Failed to parse manifest: {}", e))?
+    };
+
+    let installed_set: std::collections::HashSet<_> = installed_ids.iter().cloned().collect();
+
+    let versions = manifest["versions"]
+        .as_array()
+        .ok_or("No versions in manifest")?
+        .iter()
+        .filter(|v| installed_set.contains(v["id"].as_str().unwrap_or("")))
+        .map(|v| VersionInfo {
+            id: v["id"].as_str().unwrap_or("").to_string(),
+            version_type: v["type"].as_str().unwrap_or("").to_string(),
+            release_time: v["releaseTime"].as_str().unwrap_or("").to_string(),
+            installed: true,
+        })
+        .collect();
+
+    Ok(versions)
 }
 
 #[tauri::command]
@@ -187,7 +262,7 @@ async fn download_file(
 }
 
 async fn download_with_retry(url: &str, path: &PathBuf) -> Result<(), String> {
-    let client = Client::new();
+    let client = get_client();
     let response = client
         .get(url)
         .send()
@@ -236,17 +311,109 @@ fn extract_natives(jar_path: &PathBuf, natives_dir: &PathBuf) -> Result<(), Stri
     Ok(())
 }
 
+// Parallel download task structure
+#[derive(Clone)]
+struct DownloadTask {
+    url: String,
+    path: PathBuf,
+    sha1: Option<String>,
+    name: String, // File name for logging
+}
+
+// Download multiple files with 32 concurrent threads
+async fn download_files_parallel(tasks: Vec<DownloadTask>, app: tauri::AppHandle) -> Result<(), String> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+
+    let total = tasks.len();
+    let semaphore = Arc::new(Semaphore::new(32)); // 32 concurrent downloads
+    let mut join_set = tokio::task::JoinSet::new();
+    let downloaded_counter = Arc::new(tokio::sync::Mutex::new(0usize));
+    
+    for task in tasks {
+        // Check if download was cancelled
+        if should_cancel_download() {
+            let _ = app.emit("download-progress", serde_json::json!({
+                "status": "cancelled",
+                "message": "Download cancelled by user"
+            }));
+            return Err("Download cancelled".to_string());
+        }
+
+        let permit = semaphore.clone().acquire_owned().await.map_err(|e| e.to_string())?;
+        let app_clone = app.clone();
+        let counter = downloaded_counter.clone();
+        
+        join_set.spawn(async move {
+            let _guard = permit;
+            let filename = task.name.clone();
+            
+            match download_file(&task.url, &task.path, task.sha1.as_deref()).await {
+                Ok(()) => {
+                    let mut count = counter.lock().await;
+                    *count += 1;
+                    let _ = app_clone.emit("download-progress", serde_json::json!({
+                        "filename": filename,
+                        "status": "completed",
+                        "current": *count,
+                        "total": total
+                    }));
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = app_clone.emit("download-progress", serde_json::json!({
+                        "filename": filename,
+                        "status": "failed",
+                        "error": e.clone()
+                    }));
+                    Err(e)
+                }
+            }
+        });
+    }
+
+    let mut failed = 0;
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok(())) => {
+                // Success tracked in spawned task
+            }
+            Ok(Err(_)) => {
+                failed += 1;
+                // Continue on individual failures
+            }
+            Err(e) => {
+                let _ = app.emit("download-progress", serde_json::json!({
+                    "status": "task-error",
+                    "error": e.to_string()
+                }));
+                failed += 1;
+            }
+        }
+    }
+
+    if failed > 0 && failed == total {
+        return Err(format!("All {} downloads failed", failed));
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn install_version(
     app: tauri::AppHandle,
     version: String,
 ) -> Result<String, String> {
+    // Reset cancellation flag at start
+    reset_cancel_flag();
+
     let flint_dir = get_flint_dir()?;
     let version_dir = flint_dir.join("versions").join(&version);
     fs::create_dir_all(&version_dir).map_err(|e| e.to_string())?;
 
     // Fetch version manifest
-    let client = Client::new();
+    let client = get_client();
     let manifest_response = client
         .get(MANIFEST_URL)
         .send()
@@ -296,6 +463,8 @@ pub async fn install_version(
     let natives_dir = version_dir.join("natives");
     fs::create_dir_all(&natives_dir).map_err(|e| e.to_string())?;
 
+    let mut library_tasks = Vec::new();
+
     if let Some(libs) = vj["libraries"].as_array() {
         for lib in libs {
             // Check OS rules
@@ -327,7 +496,7 @@ pub async fn install_version(
                 continue;
             }
 
-            // Download artifact
+            // Collect artifact downloads
             if let Some(artifact) = lib["downloads"]["artifact"].as_object() {
                 let art_url = artifact.get("url")
                     .and_then(|u| u.as_str())
@@ -335,13 +504,19 @@ pub async fn install_version(
                 let art_path = artifact.get("path")
                     .and_then(|p| p.as_str())
                     .ok_or("No artifact path")?;
-                let art_sha1 = artifact.get("sha1").and_then(|s| s.as_str());
+                let art_sha1 = artifact.get("sha1").and_then(|s| s.as_str()).map(|s| s.to_string());
                 
                 let full_path = libraries_dir.join(art_path);
-                download_file(art_url, &full_path, art_sha1).await?;
+                let filename = art_path.split('/').last().unwrap_or("unknown").to_string();
+                library_tasks.push(DownloadTask {
+                    url: art_url.to_string(),
+                    path: full_path,
+                    sha1: art_sha1,
+                    name: filename,
+                });
             }
 
-            // Download and extract natives
+            // Collect native downloads
             if let Some(classifiers) = lib["downloads"]["classifiers"].as_object() {
                 if let Some(native) = classifiers.get("natives-windows") {
                     if let Some(native_obj) = native.as_object() {
@@ -351,11 +526,37 @@ pub async fn install_version(
                         let nat_path = native_obj.get("path")
                             .and_then(|p| p.as_str())
                             .ok_or("No native path")?;
-                        let nat_sha1 = native_obj.get("sha1").and_then(|s| s.as_str());
+                        let nat_sha1 = native_obj.get("sha1").and_then(|s| s.as_str()).map(|s| s.to_string());
 
                         let full_path = libraries_dir.join(nat_path);
-                        download_file(nat_url, &full_path, nat_sha1).await?;
-                        extract_natives(&full_path, &natives_dir)?;
+                        let filename = nat_path.split('/').last().unwrap_or("unknown").to_string();
+                        library_tasks.push(DownloadTask {
+                            url: nat_url.to_string(),
+                            path: full_path,
+                            sha1: nat_sha1,
+                            name: filename,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Download all libraries in parallel
+    download_files_parallel(library_tasks, app.clone()).await?;
+
+    // Extract natives after all libraries are downloaded
+    if let Some(libs) = vj["libraries"].as_array() {
+        for lib in libs {
+            if let Some(classifiers) = lib["downloads"]["classifiers"].as_object() {
+                if let Some(native) = classifiers.get("natives-windows") {
+                    if let Some(native_obj) = native.as_object() {
+                        if let Some(nat_path) = native_obj.get("path").and_then(|p| p.as_str()) {
+                            let full_path = libraries_dir.join(nat_path);
+                            if full_path.exists() {
+                                let _ = extract_natives(&full_path, &natives_dir);
+                            }
+                        }
                     }
                 }
             }
@@ -377,6 +578,8 @@ pub async fn install_version(
         let assets: Value = serde_json::from_str(&index_content).map_err(|e| e.to_string())?;
 
         let objects_dir = flint_dir.join("assets").join("objects");
+        let mut asset_tasks = Vec::new();
+        
         if let Some(objects) = assets["objects"].as_object() {
             for (_, obj) in objects.iter() {
                 if let Some(hash) = obj["hash"].as_str() {
@@ -384,11 +587,19 @@ pub async fn install_version(
                     let asset_path = objects_dir.join(&hash[..2]).join(hash);
                     
                     if !asset_path.exists() {
-                        let _ = download_file(&asset_url, &asset_path, None).await;
+                        asset_tasks.push(DownloadTask {
+                            url: asset_url.clone(),
+                            path: asset_path,
+                            sha1: None,
+                            name: hash.to_string(),
+                        });
                     }
                 }
             }
         }
+        
+        // Download all assets in parallel
+        download_files_parallel(asset_tasks, app.clone()).await?;
     }
 
     // Create default options.txt
@@ -407,7 +618,7 @@ pub async fn install_version(
         let major = java_info.get("majorVersion").and_then(|m| m.as_u64()).unwrap_or(8) as u32;
         
         if let Some(comp) = component {
-            let java_exe = install_java_component(&app, comp.to_string(), major).await?;
+            let java_exe = install_java_component(app.clone(), comp.to_string(), major).await?;
             
             // Save metadata
             let meta = json!({
@@ -425,13 +636,25 @@ pub async fn install_version(
 }
 
 #[tauri::command]
-pub async fn install_java_component(app: tauri::AppHandle, component: String, major_version: u32) -> Result<String, String> {
+pub async fn install_java_component(app: tauri::AppHandle, component: String, _major_version: u32) -> Result<String, String> {
     let flint_dir = get_flint_dir()?;
     let java_dir = flint_dir.join("runtime").join(&component);
     let java_exe = java_dir.join("bin").join("java.exe");
 
+    // Check if local bundled Java already exists
     if java_exe.exists() {
         return Ok(java_exe.to_string_lossy().to_string());
+    }
+
+    // Check if system Java exists (in PATH)
+    if let Ok(output) = std::process::Command::new("where").arg("java.exe").output() {
+        if output.status.success() {
+            if let Ok(stdout) = String::from_utf8(output.stdout) {
+                if let Some(java_path) = stdout.lines().next() {
+                    return Ok(java_path.trim().to_string());
+                }
+            }
+        }
     }
 
     // Try to copy bundled Java first
@@ -439,8 +662,8 @@ pub async fn install_java_component(app: tauri::AppHandle, component: String, ma
         return Ok(java_exe.to_string_lossy().to_string());
     }
 
-    // Download Java from internet
-    let client = Client::new();
+    // Download Java from internet only if not found
+    let client = get_client();
     
     let manifest_response = client
         .get(JAVA_MANIFEST_URL)
@@ -465,7 +688,7 @@ pub async fn install_java_component(app: tauri::AppHandle, component: String, ma
         .as_str()
         .ok_or("No manifest URL")?;
 
-    let files_response = client
+    let files_response = get_client()
         .get(java_manifest_url)
         .send()
         .await
@@ -522,5 +745,179 @@ pub async fn get_java_path(version: String) -> Result<String, String> {
         .as_str()
         .map(|s| s.to_string())
         .ok_or("No Java path found".to_string())
+}
+
+#[tauri::command]
+pub async fn get_all_profiles() -> Result<Vec<GameProfile>, String> {
+    let flint_dir = get_flint_dir()?;
+    let profiles_file = flint_dir.join("profiles.json");
+
+    if !profiles_file.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = fs::read_to_string(&profiles_file).map_err(|e| e.to_string())?;
+    
+    // Try to parse directly as GameProfile first
+    match serde_json::from_str::<Vec<GameProfile>>(&content) {
+        Ok(profiles) => Ok(profiles),
+        Err(_) => {
+            // If parsing fails, try to migrate from old format
+            match serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+                Ok(old_profiles) => {
+                    let mut migrated = Vec::new();
+                    for profile_json in old_profiles {
+                        // Extract fields, using defaults for missing ones
+                        let profile = GameProfile {
+                            name: profile_json.get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Unknown")
+                                .to_string(),
+                            base_version: profile_json.get("base_version")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("1.20.1")
+                                .to_string(),
+                            created_date: profile_json.get("created_date")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("2026-01-01 00:00:00")
+                                .to_string(),
+                            last_played: profile_json.get("last_played").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                            ram_mb: profile_json.get("ram_mb")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(2048) as u32,
+                        };
+                        migrated.push(profile);
+                    }
+                    
+                    // Save migrated profiles
+                    let _ = fs::write(&profiles_file, serde_json::to_string_pretty(&migrated).map_err(|e| e.to_string())?);
+                    Ok(migrated)
+                }
+                Err(e) => Err(format!("Failed to parse profiles: {}", e))
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn create_profile(
+    name: String,
+    baseVersion: String,
+) -> Result<GameProfile, String> {
+    let base_version = baseVersion; // Convert to snake_case for internal use
+    let flint_dir = get_flint_dir()?;
+    
+    // Validate version exists
+    if !is_version_installed(base_version.clone()).await? {
+        return Err(format!("Version {} not installed", base_version));
+    }
+
+    // Validate name is not empty
+    if name.trim().is_empty() {
+        return Err("Profile name cannot be empty".to_string());
+    }
+
+    // Check if profile already exists
+    let existing_profiles = get_all_profiles().await?;
+    if existing_profiles.iter().any(|p| p.name == name) {
+        return Err(format!("Profile '{}' already exists", name));
+    }
+
+    let profile = GameProfile {
+        name: name.clone(),
+        base_version: base_version.clone(),
+        created_date: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        last_played: None,
+        ram_mb: 2048,
+    };
+
+    // Create profile directory
+    let profile_dir = flint_dir.join("instances").join(&name);
+    fs::create_dir_all(&profile_dir).map_err(|e| e.to_string())?;
+
+    // Create options.txt if it doesn't exist
+    let options_file = profile_dir.join("options.txt");
+    if !options_file.exists() {
+        let default_options = "key_key.attack:key.mouse.left\nkey_key.use:key.mouse.right\n";
+        fs::write(&options_file, default_options).map_err(|e| e.to_string())?;
+    }
+
+    // Save profiles list
+    let mut profiles = get_all_profiles().await?;
+    profiles.push(profile.clone());
+    let profiles_file = flint_dir.join("profiles.json");
+    fs::write(&profiles_file, serde_json::to_string_pretty(&profiles).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    Ok(profile)
+}
+
+#[tauri::command]
+pub async fn delete_profile(name: String) -> Result<(), String> {
+    let flint_dir = get_flint_dir()?;
+    
+    // Delete profile directory
+    let profile_dir = flint_dir.join("instances").join(&name);
+    if profile_dir.exists() {
+        fs::remove_dir_all(&profile_dir).map_err(|e| e.to_string())?;
+    }
+
+    // Remove from profiles list
+    let mut profiles = get_all_profiles().await?;
+    profiles.retain(|p| p.name != name);
+    let profiles_file = flint_dir.join("profiles.json");
+    fs::write(&profiles_file, serde_json::to_string_pretty(&profiles).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_profile_last_played(name: String) -> Result<(), String> {
+    let flint_dir = get_flint_dir()?;
+    let mut profiles = get_all_profiles().await?;
+
+    for profile in &mut profiles {
+        if profile.name == name {
+            profile.last_played = Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+            break;
+        }
+    }
+
+    let profiles_file = flint_dir.join("profiles.json");
+    fs::write(&profiles_file, serde_json::to_string_pretty(&profiles).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_profile_ram(name: String, ramMb: u32) -> Result<(), String> {
+    let ram_mb = ramMb; // Convert to snake_case for internal use
+    if ram_mb < 512 || ram_mb > 16384 {
+        return Err("RAM must be between 512MB and 16GB".to_string());
+    }
+
+    let flint_dir = get_flint_dir()?;
+    let mut profiles = get_all_profiles().await?;
+
+    for profile in &mut profiles {
+        if profile.name == name {
+            profile.ram_mb = ram_mb;
+            break;
+        }
+    }
+
+    let profiles_file = flint_dir.join("profiles.json");
+    fs::write(&profiles_file, serde_json::to_string_pretty(&profiles).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_download() -> Result<(), String> {
+    DOWNLOAD_CANCEL_FLAG.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
