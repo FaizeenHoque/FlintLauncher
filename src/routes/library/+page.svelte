@@ -47,6 +47,9 @@
     let loadingModLoaders = $state(false);
     let modloaderDropdownOpen = $state(false);
 
+    // Activity log autoscroll
+    let logContainer: HTMLDivElement;
+
     // Subscribe to download store
     let installingVersion = $state<string | null>(null);
     let installProgress = $state(0);
@@ -79,6 +82,15 @@
         }, 2000); // Refresh every 2 seconds
 
         return () => clearInterval(interval);
+    });
+
+    // Auto-scroll activity log to bottom
+    $effect(() => {
+        if (logContainer && downloadLogs.length > 0) {
+            setTimeout(() => {
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }, 0);
+        }
     });
 
     // Listen to download progress events
@@ -305,6 +317,15 @@
         settingsProfileName = profile.name;
         settingsRamMb = profile.ram_mb;
         showProfileSettings = true;
+    }
+
+    // Check if version supports Fabric (1.19+)
+    function supportsFabric(version: string): boolean {
+        const match = version.match(/^(\d+)\.(\d+)/);
+        if (!match) return false;
+        const major = parseInt(match[1]);
+        const minor = parseInt(match[2]);
+        return major > 1 || (major === 1 && minor >= 19);
     }
 
     // Compare and sort version strings properly
@@ -661,7 +682,7 @@
             <!-- Profile Creation Modal -->
             {#if showProfileModal}
             <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                <div class="bg-neutral-800 rounded-xl p-8 w-full max-w-lg shadow-2xl">
+                <div class="bg-neutral-800 rounded-xl p-8 w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl">
                     <div class="flex justify-between items-center mb-8">
                         <h2 class="text-2xl font-bold text-green-400">Create New Profile</h2>
                         <button onclick={() => showProfileModal = false} class="text-gray-400 hover:text-white text-3xl font-light">×</button>
@@ -788,15 +809,10 @@
                                 </button>
                                 <button
                                     onclick={() => { selectedModloader = 'fabric'; selectedModloaderVersion = fabricVersions[0]?.version || ''; }}
-                                    disabled={fabricVersions.length === 0}
+                                    disabled={!supportsFabric(profileSelectedVersion) || fabricVersions.length === 0}
+                                    title={!supportsFabric(profileSelectedVersion) ? 'Fabric requires Minecraft 1.19+' : ''}
                                     class="flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed {selectedModloader === 'fabric' ? 'bg-blue-500 text-white' : 'bg-neutral-700 text-gray-300 hover:bg-neutral-600'}">
                                     Fabric {fabricVersions.length > 0 ? `(${fabricVersions.length})` : ''}
-                                </button>
-                                <button
-                                    onclick={() => { selectedModloader = 'forge'; selectedModloaderVersion = forgeVersions[0]?.version || ''; }}
-                                    disabled={forgeVersions.length === 0}
-                                    class="flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed {selectedModloader === 'forge' ? 'bg-orange-500 text-white' : 'bg-neutral-700 text-gray-300 hover:bg-neutral-600'}">
-                                    Forge {forgeVersions.length > 0 ? `(${forgeVersions.length})` : ''}
                                 </button>
                             </div>
 
@@ -996,7 +1012,7 @@
 
         <div class="w-80 flex flex-col p-6 bg-neutral-800 rounded-xl h-full">
             <div class="text-green-400 text-xs uppercase tracking-widest font-bold mb-3 shrink-0">Activity Log</div>
-            <div class="flex-1 bg-neutral-900 rounded-lg p-4 overflow-y-auto text-xs font-mono text-gray-300 space-y-1 min-h-0">
+            <div bind:this={logContainer} class="flex-1 bg-neutral-900 rounded-lg p-4 overflow-y-auto text-xs font-mono text-gray-300 space-y-1 min-h-0">
                 {#each downloadLogs as log}
                 <div class="whitespace-pre-wrap break-all">{log}</div>
                 {/each}
