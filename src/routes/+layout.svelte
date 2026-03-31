@@ -2,6 +2,7 @@
   import '../app.css';
   import { goto } from '$app/navigation';
   import { page } from '$app/stores';
+  import UpdateNotifier from '$lib/components/UpdateNotifier.svelte';
 
   let { children } = $props();
 
@@ -85,4 +86,7 @@
   <div class="flex-1 h-full bg-neutral-900 overflow-y-auto [&::-webkit-scrollbar]:hidden">
     {@render children()}
   </div>
+
+  <!-- Update Notifier -->
+  <UpdateNotifier />
 </main>
