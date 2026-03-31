@@ -2,6 +2,10 @@ import { TrayIcon } from '@tauri-apps/api/tray';
 import { Menu } from '@tauri-apps/api/menu';
 import { invoke } from '@tauri-apps/api/core';
 
+// Global flag to track if tray has been initialized
+let trayInitialized = false;
+let trayInstance: TrayIcon | null = null;
+
 // Create a minimal 32x32 green icon (RGBA format) - F (letter for Flint Launcher)
 function createGreenIconRGBA(): Uint8Array {
   // 32x32 pixels = 1024 pixels, each pixel is 4 bytes (RGBA) = 4096 bytes
@@ -53,6 +57,12 @@ function createGreenIconRGBA(): Uint8Array {
 
 export async function setupTray() {
   try {
+    // Prevent multiple tray instances from being created
+    if (trayInitialized) {
+      console.log('ℹ️ System tray already initialized, skipping duplicate setup');
+      return trayInstance;
+    }
+
     console.log('🔧 Setting up system tray...');
 
     const menu = await Menu.new({
@@ -84,7 +94,7 @@ export async function setupTray() {
       ],
     });
 
-    const tray = await TrayIcon.new({
+    trayInstance = await TrayIcon.new({
       icon: {
         rgba: createGreenIconRGBA(),
         width: 32,
@@ -94,11 +104,26 @@ export async function setupTray() {
       tooltip: 'Flint Launcher',
     });
 
+    trayInitialized = true;
     console.log('✅ System tray initialized successfully');
-    return tray;
+    return trayInstance;
   } catch (err) {
     console.error('❌ Failed to initialize system tray:', err);
     throw err;
+  }
+}
+
+// Cleanup function to destroy the tray icon if needed
+export async function cleanupTray() {
+  if (trayInstance) {
+    try {
+      await trayInstance.close();
+      trayInstance = null;
+      trayInitialized = false;
+      console.log('🧹 System tray cleaned up');
+    } catch (err) {
+      console.error('❌ Failed to cleanup system tray:', err);
+    }
   }
 }
 
