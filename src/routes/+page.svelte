@@ -104,15 +104,15 @@
            <h2 class="text-white">{currentAccount || 'None'}</h2>
         </div>
 
-        <div>
+        <!-- <div>
             <h1 class="text-gray-400">Play Time:</h1>
             <h2 class="text-white">0 Hours</h2>
-        </div>
+        </div> -->
 
-        <div>
+        <!-- <div>
             <h1 class="text-gray-400">Last Played:</h1>
             <h2 class="text-white">{lastPlayedProfile ? lastPlayedProfile.name : 'None'}</h2>
-        </div>
+        </div> -->
     </div>
 
     <div class="flex flex-col gap-4 p-6">

@@ -29,6 +29,12 @@ fn load_accounts_data(path: &PathBuf) -> Result<Value, String> {
     }
 
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    
+    // Handle empty file
+    if raw.trim().is_empty() {
+        return Ok(json!({"accounts": [], "current": null}));
+    }
+    
     let parsed: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
 
     // Handle migration from old array format to new object format
@@ -50,11 +56,27 @@ fn save_accounts_data(path: &PathBuf, data: &Value) -> Result<(), String> {
 /// Creates a new account with the given username
 /// 
 /// Maximum 6 accounts allowed. Returns error if username already exists.
+/// Username must be 3-16 characters and contain only letters, numbers, underscores, and hyphens.
 #[tauri::command]
 pub fn accountcreate(app: tauri::AppHandle, username: String) -> Result<String, String> {
     let trimmed = username.trim().to_string();
+    
+    // Validate empty
     if trimmed.is_empty() {
-        return Err("Empty username".into());
+        return Err("Username cannot be empty".into());
+    }
+    
+    // Validate length
+    if trimmed.len() < 3 {
+        return Err("Username must be at least 3 characters".into());
+    }
+    if trimmed.len() > 16 {
+        return Err("Username cannot exceed 16 characters".into());
+    }
+    
+    // Validate characters (alphanumeric, underscore, hyphen only)
+    if !trimmed.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        return Err("Username can only contain letters, numbers, underscores, and hyphens".into());
     }
 
     let path = accounts_file_path(&app)?;
@@ -74,6 +96,12 @@ pub fn accountcreate(app: tauri::AppHandle, username: String) -> Result<String, 
     }
 
     accounts.push(Value::String(trimmed.clone()));
+    
+    // If this is the only account, set it as current
+    if accounts.len() == 1 {
+        data["current"] = Value::String(trimmed.clone());
+    }
+    
     save_accounts_data(&path, &data)?;
 
     Ok(trimmed)
@@ -140,6 +168,16 @@ pub fn accountdelete(app: tauri::AppHandle, username: String) -> Result<(), Stri
         .as_array_mut()
         .ok_or("Invalid data structure")?;
     accounts.retain(|acc| acc.as_str() != Some(&username));
+
+    // If there's only one account left, set it as current
+    if accounts.len() == 1 {
+        if let Some(remaining_account) = accounts[0].as_str() {
+            data["current"] = Value::String(remaining_account.to_string());
+        }
+    } else if accounts.is_empty() {
+        // If no accounts left, set current to null
+        data["current"] = Value::Null;
+    }
 
     save_accounts_data(&path, &data)?;
 

@@ -73,6 +73,17 @@ pub struct ForgeVersion {
     pub latest: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameSettings {
+    pub vanilla_ram_mb: u32,
+    pub custom_jvm_args: String,
+    pub game_width: u32,
+    pub game_height: u32,
+    pub fullscreen: bool,
+    pub close_launcher_on_start: bool,
+    pub keep_launcher_background: bool,
+}
+
 #[derive(Clone)]
 struct DownloadTask {
     url: String,
@@ -1225,4 +1236,72 @@ pub async fn install_fabric_version(
 #[tauri::command]
 pub async fn install_forge_version(_minecraft_version: String, _forge_version: String) -> Result<(), String> {
     Err("Forge installation is not yet implemented. Use Fabric or vanilla for now.".to_string())
+}
+
+fn get_settings_path() -> Result<PathBuf, String> {
+    let flint_dir = get_flint_dir()?;
+    Ok(flint_dir.join("settings.json"))
+}
+
+#[tauri::command]
+pub async fn load_game_settings() -> Result<GameSettings, String> {
+    let settings_path = get_settings_path()?;
+    
+    if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+        
+        // Handle empty file
+        if content.trim().is_empty() {
+            return Ok(GameSettings {
+                vanilla_ram_mb: 2048,
+                custom_jvm_args: String::new(),
+                game_width: 854,
+                game_height: 480,
+                fullscreen: false,
+                close_launcher_on_start: false,
+                keep_launcher_background: false,
+            });
+        }
+        
+        serde_json::from_str(&content).map_err(|e| e.to_string())
+    } else {
+        // Return default settings
+        Ok(GameSettings {
+            vanilla_ram_mb: 2048,
+            custom_jvm_args: String::new(),
+            game_width: 854,
+            game_height: 480,
+            fullscreen: false,
+            close_launcher_on_start: false,
+            keep_launcher_background: false,
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn save_game_settings(settings: GameSettings) -> Result<(), String> {
+    let flint_dir = get_flint_dir()?;
+    fs::create_dir_all(&flint_dir).map_err(|e| e.to_string())?;
+    
+    let settings_path = flint_dir.join("settings.json");
+    let content = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    fs::write(settings_path, content).map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reset_game_settings() -> Result<GameSettings, String> {
+    let default_settings = GameSettings {
+        vanilla_ram_mb: 2048,
+        custom_jvm_args: String::new(),
+        game_width: 854,
+        game_height: 480,
+        fullscreen: false,
+        close_launcher_on_start: false,
+        keep_launcher_background: false,
+    };
+    
+    save_game_settings(default_settings.clone()).await?;
+    Ok(default_settings)
 }

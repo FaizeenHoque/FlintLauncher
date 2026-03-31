@@ -1,5 +1,6 @@
 use std::process::{Command, Stdio};
 use std::path::PathBuf;
+use tauri::Manager;
 
 /// Configuration for launching Minecraft
 pub struct LaunchConfig {
@@ -13,6 +14,11 @@ pub struct LaunchConfig {
     pub game_dir: PathBuf,
     pub assets_dir: PathBuf,
     pub ram_mb: u32,
+    pub custom_jvm_args: String,
+    pub game_width: u32,
+    pub game_height: u32,
+    pub fullscreen: bool,
+    pub keep_launcher_background: bool,
 }
 
 /// Spawns the Minecraft Java process with the given configuration
@@ -28,8 +34,16 @@ pub async fn spawn_minecraft_process(
     let min_ram = format!("-Xms{}M", config.ram_mb / 2);
 
     cmd.arg(&max_ram)
-        .arg(&min_ram)
-        .arg(&config.java_library_path)
+        .arg(&min_ram);
+    
+    // Add custom JVM arguments if provided
+    if !config.custom_jvm_args.is_empty() {
+        for arg in config.custom_jvm_args.split_whitespace() {
+            cmd.arg(arg);
+        }
+    }
+
+    cmd.arg(&config.java_library_path)
         .arg("-cp")
         .arg(&config.classpath)
         .arg(&config.main_class)
@@ -61,8 +75,20 @@ pub async fn spawn_minecraft_process(
         .arg("--userType")
         .arg("legacy")
         .arg("--versionType")
-        .arg("release")
-        .stdout(Stdio::inherit())
+        .arg("release");
+    
+    // Add game resolution if set
+    if config.game_width > 0 && config.game_height > 0 {
+        cmd.arg("--width").arg(config.game_width.to_string())
+           .arg("--height").arg(config.game_height.to_string());
+    }
+    
+    // Add fullscreen flag if enabled
+    if config.fullscreen {
+        cmd.arg("--fullscreen");
+    }
+
+    cmd.stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
     let mut child = cmd.spawn().map_err(|e| {
@@ -82,6 +108,7 @@ pub async fn spawn_minecraft_process(
 
     // Spawn a background task to wait for the game process and report completion
     let app_clone = app.clone();
+    let keep_launcher_background = config.keep_launcher_background;
     tokio::spawn(async move {
         match child.wait() {
             Ok(status) => {
@@ -90,6 +117,15 @@ pub async fn spawn_minecraft_process(
                 } else {
                     let exit_code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string());
                     super::pathManagement::emit_log(&app_clone, format!("[ERROR] Game crashed with exit code: {} (PID: {})", exit_code, pid));
+                }
+                
+                // If keep_launcher_background is true, show the launcher window
+                if keep_launcher_background {
+                    // Get all webview windows and show them
+                    for window in app_clone.webview_windows().values() {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                 }
             },
             Err(e) => {

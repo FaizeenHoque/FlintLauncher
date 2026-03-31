@@ -9,6 +9,7 @@ use libraryManagement::{
     get_installed_versions, get_installed_versions_info, get_java_path,
     install_java_component, install_version, is_version_installed, update_profile_last_played,
     update_profile_ram, get_fabric_versions, get_forge_versions, install_fabric_version, install_forge_version, cancel_download,
+    load_game_settings, save_game_settings, reset_game_settings,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -40,6 +41,9 @@ pub fn run() {
             install_fabric_version,
             install_forge_version,
             cancel_download,
+            load_game_settings,
+            save_game_settings,
+            reset_game_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

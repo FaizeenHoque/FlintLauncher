@@ -241,6 +241,22 @@ pub async fn launchprocess(
     // Prepare native library path
     let java_library_path = format!("-Djava.library.path={}", dirs.natives_dir.display());
 
+    // Load game settings
+    let game_settings = crate::libraryManagement::load_game_settings().await.unwrap_or_else(|_| {
+        crate::libraryManagement::GameSettings {
+            vanilla_ram_mb: 2048,
+            custom_jvm_args: String::new(),
+            game_width: 854,
+            game_height: 480,
+            fullscreen: false,
+            close_launcher_on_start: false,
+            keep_launcher_background: false,
+        }
+    });
+
+    // For vanilla launch, use vanilla_ram_mb setting; for profiles, use profile ram_mb
+    let final_ram_mb = if is_profile { ram_mb } else { game_settings.vanilla_ram_mb };
+
     // Launch the game
     let config = LaunchConfig {
         java_exe,
@@ -252,7 +268,12 @@ pub async fn launchprocess(
         asset_index,
         game_dir: dirs.mc_dir,
         assets_dir: dirs.assets_dir,
-        ram_mb,
+        ram_mb: final_ram_mb,
+        custom_jvm_args: game_settings.custom_jvm_args.clone(),
+        game_width: game_settings.game_width,
+        game_height: game_settings.game_height,
+        fullscreen: game_settings.fullscreen,
+        keep_launcher_background: game_settings.keep_launcher_background,
     };
 
     spawn_minecraft_process(&app, config).await?;
