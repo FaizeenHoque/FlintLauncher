@@ -1,7 +1,6 @@
 mod accounts;
 mod launchprocess;
 mod libraryManagement;
-mod updater;
 mod window_manager;
 
 use accounts::{accountcreate, accountdelete, accountget, accountgetcurrent, accountsetcurrent};
@@ -13,13 +12,14 @@ use libraryManagement::{
     update_profile_ram, get_fabric_versions, get_forge_versions, install_fabric_version, install_forge_version, cancel_download,
     load_game_settings, save_game_settings, reset_game_settings,
 };
-use updater::{check_for_updates, download_and_install_update};
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             window_manager::handle_window_event(window, event);
         })
@@ -51,8 +51,6 @@ pub fn run() {
             load_game_settings,
             save_game_settings,
             reset_game_settings,
-            check_for_updates,
-            download_and_install_update,
             window_manager::show_main_window,
             window_manager::quit_app,
         ])

@@ -33,5 +33,11 @@ export default defineConfig(async () => ({
 
   test: {
     environment: 'jsdom'
+  },
+
+  build: {
+    rollupOptions: {
+      external: ['@tauri-apps/api/process', '@tauri-apps/plugin-updater']
+    }
   }
 }));

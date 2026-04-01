@@ -1,14 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { invoke } from '@tauri-apps/api/core';
-	import { listen } from '@tauri-apps/api/event';
+	import { browser } from '$app/environment';
 
 	interface UpdateInfo {
 		current_version: string;
 		latest_version: string;
-		update_available: boolean;
-		download_url: string | null;
-		release_name: string | null;
 		release_notes: string | null;
 	}
 
@@ -16,29 +12,26 @@
 	let updateInfo = $state<UpdateInfo | null>(null);
 	let isDownloading = $state(false);
 	let downloadStatus = $state('');
-	let unlistenFn: (() => void) | null = null;
 
 	onMount(() => {
-		// Check for updates on app start
-		checkForUpdates();
-		setupUpdateListener();
-
-		return () => {
-			if (unlistenFn) {
-				unlistenFn();
-			}
-		};
+		if (browser) {
+			checkForUpdates();
+		}
 	});
 
 	async function checkForUpdates() {
-		try {
-			const currentVersion = '0.2.0'; // Version matches tauri.conf.json
-			const info = await invoke<UpdateInfo>('check_for_updates', {
-				currentVersion: currentVersion
-			});
+		if (!browser) return;
 
-			if (info.update_available && info.download_url) {
-				updateInfo = info;
+		try {
+			const { check } = await import('@tauri-apps/plugin-updater');
+			const update = await check();
+
+			if (update?.available) {
+				updateInfo = {
+					current_version: update.currentVersion,
+					latest_version: update.version,
+					release_notes: update.body
+				};
 				showUpdateDialog = true;
 			}
 		} catch (error) {
@@ -46,28 +39,20 @@
 		}
 	}
 
-	async function setupUpdateListener() {
-		try {
-			unlistenFn = await listen('update-ready', (event: any) => {
-				downloadStatus = 'Update ready to install. Please restart the launcher.';
-				isDownloading = false;
-			});
-		} catch (error) {
-			console.error('Failed to setup update listener:', error);
-		}
-	}
-
 	async function handleDownloadAndInstall() {
-		if (!updateInfo?.download_url) return;
+		if (!updateInfo || !browser) return;
 
 		isDownloading = true;
 		downloadStatus = 'Downloading update...';
 
 		try {
-			const result = await invoke<string>('download_and_install_update', {
-				download_url: updateInfo.download_url
-			});
-			downloadStatus = result;
+			const { check } = await import('@tauri-apps/plugin-updater');
+			const update = await check();
+			if (update?.available) {
+				await update.downloadAndInstall();
+				downloadStatus = 'Update installed. Restarting...';
+				// The updater automatically restarts the app after install
+			}
 		} catch (error) {
 			downloadStatus = `Error: ${error}`;
 			isDownloading = false;

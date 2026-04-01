@@ -24,7 +24,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -33,5 +33,15 @@
       "icons/icon.ico"
     ],
     "resources": ["resources/**/*", "icons/**/*"]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/user/flint-launcher/releases/latest/download/latest.json"
+      ],
+      "dialog": false,
+      "pubkey": "MCowBQYDK2VwAyEA/EKm/mDJDEXSyqIebF25WchD12wT3ygHn1djTh63pao="
+    }
   }
 }

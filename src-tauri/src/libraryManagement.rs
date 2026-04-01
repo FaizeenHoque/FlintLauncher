@@ -428,33 +428,75 @@ pub async fn get_installed_versions() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub async fn get_installed_versions_info() -> Result<Vec<VersionInfo>, String> {
     let installed_ids = get_installed_versions().await?;
+    let mut versions = Vec::new();
 
-    let client = get_client();
-    let response = client
-        .get(MANIFEST_URL)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch manifest: {}", e))?;
+    // First, try to get metadata from local version JSON files
+    for version_id in &installed_ids {
+        let flint_dir = get_flint_dir()?;
+        let version_json_path = flint_dir
+            .join("versions")
+            .join(version_id)
+            .join(format!("{}.json", version_id));
 
-    let manifest: Value = {
-        let text = response.text().await.map_err(|e| e.to_string())?;
-        serde_json::from_str(&text).map_err(|e| format!("Failed to parse manifest: {}", e))?
-    };
+        if version_json_path.exists() {
+            if let Ok(content) = tokio_fs::read_to_string(&version_json_path).await {
+                if let Ok(version_data) = serde_json::from_str::<Value>(&content) {
+                    versions.push(VersionInfo {
+                        id: version_id.clone(),
+                        version_type: version_data.get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        release_time: version_data.get("releaseTime")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        installed: true,
+                    });
+                    continue;
+                }
+            }
+        }
 
-    let installed_set: std::collections::HashSet<_> = installed_ids.iter().cloned().collect();
-
-    let versions = manifest["versions"]
-        .as_array()
-        .ok_or("No versions in manifest")?
-        .iter()
-        .filter(|v| installed_set.contains(v["id"].as_str().unwrap_or("")))
-        .map(|v| VersionInfo {
-            id: v["id"].as_str().unwrap_or("").to_string(),
-            version_type: v["type"].as_str().unwrap_or("").to_string(),
-            release_time: v["releaseTime"].as_str().unwrap_or("").to_string(),
+        // Fallback: if local file can't be read, add minimal info
+        versions.push(VersionInfo {
+            id: version_id.clone(),
+            version_type: "unknown".to_string(),
+            release_time: "".to_string(),
             installed: true,
-        })
-        .collect();
+        });
+    }
+
+    // Try to enrich with online manifest data if available (for better UI)
+    if let Ok(client) = std::panic::catch_unwind(|| get_client()) {
+        if let Ok(response) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.get(MANIFEST_URL).send(),
+        )
+        .await
+        {
+            if let Ok(resp) = response {
+                if let Ok(text) = resp.text().await {
+                    if let Ok(manifest) = serde_json::from_str::<Value>(&text) {
+                        if let Some(manifest_versions) = manifest["versions"].as_array() {
+                            for manifest_version in manifest_versions {
+                                if let Some(id) = manifest_version["id"].as_str() {
+                                    if let Some(version) = versions.iter_mut().find(|v| v.id == id) {
+                                        if let Some(version_type) = manifest_version["type"].as_str() {
+                                            version.version_type = version_type.to_string();
+                                        }
+                                        if let Some(release_time) = manifest_version["releaseTime"].as_str() {
+                                            version.release_time = release_time.to_string();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Ok(versions)
 }

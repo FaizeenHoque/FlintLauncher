@@ -122,13 +122,13 @@
                 onclick={switchToProfiles}
                 class="px-6 py-2 rounded-lg font-medium transition-all {activeTab == 'profiles' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-white hover:bg-neutral-600'}"
             >
-                Modded Profiles
+                Profiles
             </button>
             <button 
                 onclick={switchToVanilla}
                 class="px-6 py-2 rounded-lg font-medium transition-all {activeTab == 'vanilla' ? 'bg-green-400 text-neutral-900' : 'bg-neutral-700 text-white hover:bg-neutral-600'}"
             >
-                Vanilla Versions
+                Versions
             </button>
         </div>
 
