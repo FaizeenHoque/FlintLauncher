@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "node src-tauri/bundle-java.js && npm run build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../build"
   },
   "app": {
@@ -33,6 +33,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/**/*", "icons/**/*"]
+    "resources": ["icons/**/*"]
   }
 }

@@ -425,6 +425,289 @@ async fn download_files_parallel(tasks: Vec<DownloadTask>, app: tauri::AppHandle
     Ok(())
 }
 
+// Check if all required Java components are present
+#[tauri::command]
+/// Check if a Java component is valid using sentinel files
+/// A component is valid if:
+/// - .installed file exists
+/// - .installing file does NOT exist
+/// 
+/// If .installing exists (incomplete download), the component directory is wiped.
+fn is_component_valid(component_dir: &PathBuf) -> bool {
+    let installed_sentinel = component_dir.join(".installed");
+    let installing_sentinel = component_dir.join(".installing");
+    
+    installed_sentinel.exists() && !installing_sentinel.exists()
+}
+
+#[tauri::command]
+pub async fn check_java_status() -> Result<String, String> {
+    let flint_dir = get_flint_dir()?;
+    let runtime_dir = flint_dir.join("runtime");
+
+    let required_components = vec![
+        "java-runtime-alpha",
+        "java-runtime-beta",
+        "java-runtime-gamma",
+        "java-runtime-gamma-snapshot",
+        "java-runtime-delta",
+        "java-runtime-epsilon",
+        "jre-legacy",
+    ];
+
+    let mut invalid_components = Vec::new();
+    
+    for component in &required_components {
+        let component_dir = runtime_dir.join(component);
+        let installing_sentinel = component_dir.join(".installing");
+        
+        // If .installing exists, the directory is incomplete - wipe it
+        if installing_sentinel.exists() {
+            let _ = fs::remove_dir_all(&component_dir);
+            invalid_components.push(component.to_string());
+        }
+        // If .installed doesn't exist, component is missing or corrupted
+        else if !is_component_valid(&component_dir) {
+            invalid_components.push(component.to_string());
+        }
+    }
+
+    if invalid_components.is_empty() {
+        Ok("ready".to_string())
+    } else {
+        Ok(format!("bootstrap_needed:{}", invalid_components.join(",")))
+    }
+}
+
+// Bootstrap Java runtimes - downloads missing or corrupted components
+// Signature: bootstrap_java_runtimes(components: Option<Vec<String>>)
+// - If components is None → check all 7, download missing/corrupted
+// - If components is Some(list) → only process those in the list
+#[tauri::command]
+pub async fn bootstrap_java_runtimes(
+    app: tauri::AppHandle,
+    components: Option<Vec<String>>,
+) -> Result<String, String> {
+    let flint_dir = get_flint_dir()?;
+    let runtime_dir = flint_dir.join("runtime");
+    fs::create_dir_all(&runtime_dir).map_err(|e| e.to_string())?;
+
+    // All available Java components
+    let all_components = vec![
+        "java-runtime-alpha".to_string(),
+        "java-runtime-beta".to_string(),
+        "java-runtime-gamma".to_string(),
+        "java-runtime-gamma-snapshot".to_string(),
+        "java-runtime-delta".to_string(),
+        "java-runtime-epsilon".to_string(),
+        "jre-legacy".to_string(),
+    ];
+
+    // Determine which components to check
+    let to_check = if let Some(list) = &components {
+        list.clone()
+    } else {
+        all_components.clone()
+    };
+
+    // Find components that need downloading (invalid or missing sentinel)
+    let mut to_download = Vec::new();
+    for component in &to_check {
+        let component_dir = runtime_dir.join(component);
+        let installing_sentinel = component_dir.join(".installing");
+        
+        // If .installing exists, component is incomplete - wipe and re-download
+        if installing_sentinel.exists() {
+            let _ = fs::remove_dir_all(&component_dir);
+            to_download.push(component.clone());
+        }
+        // If .installed doesn't exist, component is missing
+        else if !is_component_valid(&component_dir) {
+            to_download.push(component.clone());
+        }
+    }
+
+    // Early return if all components are already valid
+    if to_download.is_empty() {
+        let _ = app.emit("bootstrap:done", json!({}));
+        return Ok("All components present and valid".to_string());
+    }
+
+    // Fetch Java manifest
+    let client = get_client();
+    let manifest_response = client
+        .get(JAVA_MANIFEST_URL)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch Java manifest: {}", e))?;
+
+    let manifest: Value = {
+        let text = manifest_response.text().await.map_err(|e| e.to_string())?;
+        serde_json::from_str(&text).map_err(|e| format!("Failed to parse manifest: {}", e))?
+    };
+
+    // Emit start event with total components to download
+    let _ = app.emit("bootstrap:start", json!({ "total_components": to_download.len() }));
+
+    // Download components sequentially to avoid overwhelming system
+    for component_name in &to_download {
+        let app_handle = app.clone();
+        let manifest_clone = manifest.clone();
+        let component = component_name.clone();
+        let runtime_dir = runtime_dir.clone();
+
+        if let Err(e) = download_java_component(
+            &app_handle,
+            &manifest_clone,
+            &component,
+            &runtime_dir,
+        )
+        .await
+        {
+            let _ = app.emit("bootstrap:error", json!({ "message": e }));
+        }
+    }
+
+    let _ = app.emit("bootstrap:done", json!({}));
+    Ok(format!("Java bootstrap completed for {} component(s)", to_download.len()))
+}
+
+/// Download a single Java component
+/// Creates .installing sentinel before download, deletes it and creates .installed after success
+async fn download_java_component(
+    app: &tauri::AppHandle,
+    manifest: &Value,
+    component_name: &str,
+    runtime_dir: &PathBuf,
+) -> Result<(), String> {
+    let component_dir = runtime_dir.join(component_name);
+    
+    // Create component directory and .installing sentinel
+    fs::create_dir_all(&component_dir).map_err(|e| e.to_string())?;
+    let installing_sentinel = component_dir.join(".installing");
+    fs::write(&installing_sentinel, "").map_err(|e| e.to_string())?;
+
+    // Get runtime manifest for this component
+    let runtime_list = manifest["windows-x64"][component_name]
+        .as_array()
+        .ok_or(format!("Component {} not found in manifest for windows-x64", component_name))?;
+
+    let runtime = runtime_list.last().ok_or("Empty runtime list")?;
+    let java_manifest_url = runtime["manifest"]["url"]
+        .as_str()
+        .ok_or("No manifest URL")?;
+
+    // Emit initial progress event
+    let _ = app.emit("bootstrap:progress", json!({
+        "component": component_name,
+        "current_file": "Fetching file list...",
+        "downloaded": 0,
+        "total": 0
+    }));
+
+    // Fetch the files manifest for this component
+    let client = get_client();
+    let files_response = client
+        .get(java_manifest_url)
+        .send()
+        .await
+        .map_err(|e| {
+            let _ = fs::remove_file(&installing_sentinel);
+            format!("Failed to fetch Java files manifest: {}", e)
+        })?;
+
+    let java_manifest: Value = {
+        let text = files_response.text().await.map_err(|e| {
+            let _ = fs::remove_file(&installing_sentinel);
+            e.to_string()
+        })?;
+        serde_json::from_str(&text).map_err(|e| {
+            let _ = fs::remove_file(&installing_sentinel);
+            format!("Failed to parse Java manifest: {}", e)
+        })?
+    };
+
+    let files = java_manifest["files"]
+        .as_object()
+        .ok_or_else(|| {
+            let _ = fs::remove_file(&installing_sentinel);
+            "No files in Java manifest".to_string()
+        })?;
+
+    let total_files = files.len();
+    println!("[Bootstrap] {} has {} files to download", component_name, total_files);
+
+    // Emit start of download
+    let _ = app.emit("bootstrap:progress", json!({
+        "component": component_name,
+        "current_file": format!("Starting download ({} files)", total_files),
+        "downloaded": 0,
+        "total": total_files
+    }));
+
+    let mut file_count = 0;
+
+    // Download and extract files
+    for (path, info) in files.iter() {
+        if let Some(file_type) = info["type"].as_str() {
+            match file_type {
+                "directory" => {
+                    let dir_path = component_dir.join(path.replace("/", "\\"));
+                    let _ = fs::create_dir_all(&dir_path);
+                }
+                "file" => {
+                    if let Some(file_url) = info["downloads"]["raw"]["url"].as_str() {
+                        let file_path = component_dir.join(path.replace("/", "\\"));
+                        
+                        // Ensure parent directory exists
+                        if let Some(parent) = file_path.parent() {
+                            let _ = fs::create_dir_all(parent);
+                        }
+
+                        // Download file - emit progress with actual count
+                        let file_name = path.split('/').last().unwrap_or("file");
+                        let _ = app.emit("bootstrap:progress", json!({
+                            "component": component_name,
+                            "current_file": file_name,
+                            "downloaded": file_count,
+                            "total": total_files
+                        }));
+
+                        if let Err(e) = download_file(file_url, &file_path, None).await {
+                            let _ = fs::remove_file(&installing_sentinel);
+                            return Err(format!("Failed to download {}: {}", path, e));
+                        }
+
+                        file_count += 1;
+                        
+                        // Emit progress update
+                        let _ = app.emit("bootstrap:progress", json!({
+                            "component": component_name,
+                            "current_file": file_name,
+                            "downloaded": file_count,
+                            "total": total_files
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Mark component as installed - delete .installing, create .installed
+    let _ = fs::remove_file(&installing_sentinel);
+    let installed_sentinel = component_dir.join(".installed");
+    fs::write(&installed_sentinel, "").map_err(|e| {
+        format!("Failed to create .installed sentinel: {}", e)
+    })?;
+
+    // Emit component completion event
+    let _ = app.emit("bootstrap:component_done", json!({ "component": component_name }));
+    
+    println!("[Bootstrap] {} completed successfully", component_name);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn fetch_available_versions() -> Result<Vec<VersionInfo>, String> {
     let manifest = get_manifest_cached().await?;
@@ -628,6 +911,23 @@ pub async fn install_version(
     let vj_path = version_dir.join(format!("{}.json", version));
     fs::write(&vj_path, serde_json::to_string_pretty(&vj).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
+
+    // Check if required Java component is installed, download if missing
+    if let Some(java_info) = vj.get("javaVersion") {
+        if let Some(component) = java_info.get("component").and_then(|c| c.as_str()) {
+            let runtime_dir = get_flint_dir()?.join("runtime");
+            let component_dir = runtime_dir.join(component);
+            
+            // Check if component is valid using sentinel files
+            if !is_component_valid(&component_dir) {
+                println!("[INSTALL] Java component {} not valid, bootstrapping...", component);
+                // Download only this specific component before proceeding
+                bootstrap_java_runtimes(app.clone(), Some(vec![component.to_string()])).await?;
+            } else {
+                println!("[INSTALL] Java component {} is valid", component);
+            }
+        }
+    }
 
     // Download client JAR
     if let Some(client_obj) = vj["downloads"]["client"].as_object() {

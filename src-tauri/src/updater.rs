@@ -101,6 +101,7 @@ pub async fn check_for_updates(current_version: String) -> Result<UpdateInfo, St
 }
 
 /// Download and install update
+#[allow(dead_code)]
 #[tauri::command]
 pub async fn download_and_install_update(
     app: tauri::AppHandle,
